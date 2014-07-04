@@ -62,8 +62,8 @@ func NewGlobalHao123(spiderFile string, inChanSize int, outChanSize int, routine
     
     spiders := LoadSpiderList(spiderFile)
 
-    och := make(chan map[string]string, inChanSize)
-    ich := make(chan string, outChanSize)
+    och := make(chan map[string]string, outChanSize)
+    ich := make(chan string, inChanSize)
     /*
     dch := make(chan int, chanSize)
     wch := make(chan int64, 1)
@@ -124,8 +124,8 @@ func (g *GlobalHao123) processLine(line string) {
 
     g.parseIp(logLine.ip, logLine.client_ip, kvs)
 
+    //log.Println("out chan", len(g.outputChan))
     g.outputChan <- kvs   //送入channel
-    //log.Println("elapse", time.Now().Sub(st))
 }
 // parse 文件
 func (g *GlobalHao123) ParseFile(fname string) error {
@@ -145,8 +145,8 @@ func (g *GlobalHao123) ParseReader(r io.Reader) {
     scanner := bufio.NewScanner(r);
     for scanner.Scan() {
         line := scanner.Text()
-        g.inputChan <- line
         //log.Println("in chan", len(g.inputChan))
+        g.inputChan <- line
     }
     log.Println("etl reader finish")
 }
