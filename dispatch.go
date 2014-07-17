@@ -179,6 +179,10 @@ func (d *Dispatcher) writeFile(w io.WriteCloser, kvs map[string]string, kind str
                     log.Println(kind, "miss field:", col)
                 }
             }
+            //替换掉可能的换行符
+            if val != "" {
+                val = strings.Replace(val, "\n", "", -1)
+            }
             buf.WriteString(val)
             if i != nCols - 1 {
                 buf.WriteByte('\t')
