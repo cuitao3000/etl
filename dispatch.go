@@ -13,72 +13,9 @@ import (
     "path/filepath"
     "time"
     "sync"
+    "bufio"
 )
 
-func check_type_value(t string) bool {
-    if len(t) > 20 {
-        return false
-    }
-    re := regexp.MustCompile("^[0-9,a-z,A-Z,_]*$")
-    return re.MatchString(t)
-}
-
-func check_host_value(host string) bool {
-    l := len(host)
-    if l == 0 || l > 15 {
-        return false
-    }
-    re := regexp.MustCompile(`^[a-z,A-Z,\.]{1,8}\.hao[12]2[23]\.com$`)
-    return re.MatchString(host)
-}
-
-func check_url_path(path string) bool {
-    return strings.LastIndex(path, ".") == -1 || strings.HasSuffix(path, ".html") || strings.HasSuffix(path, ".htm")
-}
-
-func Disp_global_hao123_access(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
-    if !check_type_value(globalhao123_type) || !check_host_value(globalhao123_host) {
-        return false
-    }
-
-    if event_urlpath == "/img/gut.gif" && ("access" == globalhao123_type || "faccess" == globalhao123_type) {
-        return true
-    }
-    return false
-}
-
-func Disp_global_hao123_click(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
-    if !check_type_value(globalhao123_type) || !check_host_value(globalhao123_host) {
-        return false
-    }
-
-    if event_urlpath == "/img/gut.gif" && /*"" != globalhao123_type &&*/ "access" != globalhao123_type && "faccess" != globalhao123_type {
-        return true
-    }
-    return false
-}
-
-func Disp_global_hao123_others(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
-    if !check_type_value(globalhao123_type) || !check_host_value(globalhao123_host) {
-        return false
-    }
-
-    if check_url_path(event_urlpath) && globalhao123_type != "bad_type" {
-        return true
-    }
-    return false
-}
-
-func Disp_global_hao123_open(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
-    if !check_type_value(globalhao123_type) || !check_host_value(globalhao123_host) {
-        return false
-    }
-
-    if event_urlpath == "/img/open-gut.gif" {
-        return true
-    }
-    return false
-}
 
 type kvsChan chan map[string]string
 type columnsMap map[string]map[string][]string   // {"type": {"columns":[] , "partitions":[]}, ...}
@@ -92,9 +29,11 @@ type Dispatcher struct {
     routineNum int       //routine个数
     outFilePrefix string  //输出文件名的默认前缀
     mutex *sync.RWMutex
+    typeValueRe *regexp.Regexp
+    hostsRe []*regexp.Regexp  //合法host的正则
 }
 
-func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePrefix string) *Dispatcher {
+func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePrefix string, hostsWhiteListFile string) *Dispatcher {
     m := loadColsMap(colsMapFile)
     w := make(map[string]io.WriteCloser)
     if routineNum < 0 {
@@ -104,7 +43,9 @@ func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePre
         outFilePrefix = "etl"
     }
     mutex := &sync.RWMutex{}
-    return &Dispatcher{m, w, outDir, routineNum, outFilePrefix, mutex}
+    typeValueRe := regexp.MustCompile("^[0-9,a-z,A-Z,_]*$")
+    hostsWhiteList := loadHostsWhiteList(hostsWhiteListFile)
+    return &Dispatcher{m, w, outDir, routineNum, outFilePrefix, mutex, typeValueRe, hostsWhiteList}
 }
 
 func loadColsMap(fname string) columnsMap {
@@ -119,6 +60,107 @@ func loadColsMap(fname string) columnsMap {
         }
     }
     return m
+}
+
+func loadHostsWhiteList(whiteListFile string) []*regexp.Regexp {
+    wlist := make([]*regexp.Regexp, 0)
+
+    fin, err := os.Open(whiteListFile)
+    if err != nil {
+        log.Println("load hosts white list:", whiteListFile, "error:", err)
+    }else{
+        scanner := bufio.NewScanner(fin)
+        for scanner.Scan() {
+            pat := scanner.Text()
+            if pat != "" {
+                re, err := regexp.Compile(pat)
+                if err != nil {
+                    log.Println("compile white list [" + pat + "] error:", err)
+                }else{
+                    wlist = append(wlist, re)
+                }
+            }else{
+                log.Println("discard white list empty line")
+            }
+        }
+        fin.Close()
+    }
+    log.Println("load white list size:", len(wlist))
+    return wlist
+}
+
+func (d *Dispatcher) check_type_value(t string) bool {
+    if len(t) > 20 {
+        return false
+    }
+    return d.typeValueRe.MatchString(t)
+}
+
+func (d *Dispatcher) check_host_value(host string) bool {
+    /*
+    l := len(host)
+    if l == 0 || l > 15 {
+        return false
+    }
+    re := regexp.MustCompile(`^[a-z,A-Z,\.]{1,8}\.hao[12]2[23]\.com$`)
+    return re.MatchString(host)
+    */
+    ret := false
+    for _, re := range d.hostsRe {
+        if re.MatchString(host) {
+            ret = true
+            break
+        }
+    }
+    return ret
+}
+
+func (d *Dispatcher) check_url_path(path string) bool {
+    return strings.LastIndex(path, ".") == -1 || strings.HasSuffix(path, ".html") || strings.HasSuffix(path, ".htm")
+}
+
+func (d *Dispatcher) Disp_global_hao123_access(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
+    if !d.check_type_value(globalhao123_type) || !d.check_host_value(globalhao123_host) {
+        return false
+    }
+
+    if event_urlpath == "/img/gut.gif" && ("access" == globalhao123_type || "faccess" == globalhao123_type) {
+        return true
+    }
+    return false
+}
+
+func (d *Dispatcher) Disp_global_hao123_click(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
+    if !d.check_type_value(globalhao123_type) || !d.check_host_value(globalhao123_host) {
+        return false
+    }
+
+    if event_urlpath == "/img/gut.gif" && /*"" != globalhao123_type &&*/ "access" != globalhao123_type && "faccess" != globalhao123_type {
+        return true
+    }
+    return false
+}
+
+func (d *Dispatcher) Disp_global_hao123_others(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
+    if !d.check_type_value(globalhao123_type) || !d.check_host_value(globalhao123_host) {
+        return false
+    }
+
+    if d.check_url_path(event_urlpath) && globalhao123_type != "bad_type" {
+        return true
+    }
+    return false
+}
+
+func (d *Dispatcher) Disp_global_hao123_open(globalhao123_type string, event_urlpath string, globalhao123_host string) bool {
+    if !d.check_type_value(globalhao123_type) || !d.check_host_value(globalhao123_host) {
+        return false
+    }
+
+    if event_urlpath == "/img/open-gut.gif" {
+        return true
+    }
+    return false
 }
 
 //清理过期的文件操作符
@@ -242,20 +284,20 @@ func (d *Dispatcher) saveFile(kvs map[string]string, kind string, routineId int)
     d.writeFile(w, kvs, kind)
 }
 //获取日志类别
-func getKind(kvs map[string]string) string {
+func (d *Dispatcher) getKind(kvs map[string]string) string {
     tp, _ := kvs["globalhao123_type"]
     path, _ := kvs["event_urlpath"]
     host, _ := kvs["globalhao123_host"]
 
     kind := ""
 
-    if Disp_global_hao123_access(tp, path, host) {
+    if d.Disp_global_hao123_access(tp, path, host) {
         kind = "access"
-    }else if Disp_global_hao123_click(tp, path, host) {
+    }else if d.Disp_global_hao123_click(tp, path, host) {
         kind = "click"
-    }else if Disp_global_hao123_open(tp, path, host) {
+    }else if d.Disp_global_hao123_open(tp, path, host) {
         kind = "open"
-    }else if Disp_global_hao123_others(tp, path, host) {
+    }else if d.Disp_global_hao123_others(tp, path, host) {
         kind = "others"
     }
     return kind
@@ -264,7 +306,7 @@ func getKind(kvs map[string]string) string {
 func (d *Dispatcher) dispatchRoutine(ch kvsChan, wg *sync.WaitGroup, routineId int) {
     log.Println("start dispatch routine", routineId)
     for kvs := range ch {
-        kind := getKind(kvs)
+        kind := d.getKind(kvs)
         if kind != "" {
             d.saveFile(kvs, kind, routineId)
         }

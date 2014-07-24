@@ -274,7 +274,13 @@ func (g *GlobalHao123) parseRawQuery(queryStr string) Query {
                     keyCount[k] = 1
                 }
 
-                url.url_fields[k] = pair[1]
+                decoded, err := net_url.QueryUnescape(pair[1])
+                if err != nil {
+                    url.url_fields[k] = pair[1]
+                    log.Println("decode", pair[1], "error:", err)
+                }else{
+                    url.url_fields[k] = strings.Trim(decoded, " ")
+                }
             }
         }
     }

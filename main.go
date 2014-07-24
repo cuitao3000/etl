@@ -19,6 +19,7 @@ func main(){
         saveRoutineNum int
         parseRoutineNum int
         outFilePrefix string
+        whiteListFile string
     )
     flag.StringVar(&outDir, "od", "./", "dir to save result")
     flag.StringVar(&spiderList, "sl", "", "spider list file")
@@ -28,6 +29,7 @@ func main(){
     flag.IntVar(&inChanSize, "ics", 100, "number of input channel size")
     flag.IntVar(&outChanSize, "ocs", 200, "number of output channel size")
     flag.StringVar(&outFilePrefix, "ofp", "etl", "the output file prefix")
+    flag.StringVar(&whiteListFile, "wl", "", "the hosts white list file")
     flag.Parse()
 
     if spiderList == "" {
@@ -38,7 +40,7 @@ func main(){
         flag.PrintDefaults()
         return
     }
-    d := NewDispatcher(colsMap, outDir, saveRoutineNum, outFilePrefix)
+    d := NewDispatcher(colsMap, outDir, saveRoutineNum, outFilePrefix, whiteListFile)
     g := NewGlobalHao123(spiderList, inChanSize, outChanSize, parseRoutineNum, d)
 
     go g.Start(false)
