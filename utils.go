@@ -2,7 +2,7 @@ package etl
 
 import (
     "log"
-    //"fmt"
+    "net"
     "strings"
     "bytes"
     "encoding/base64"
@@ -141,4 +141,11 @@ func MakeHiveMap(m map[string]string) string {
     }
     return buf.String()
 }
-
+//ip转无符号整数
+func ipToInt(ip string) (uint32, error) {
+    ipo := net.ParseIP(ip)
+    r := bytes.NewReader([]byte(ipo.To4()))
+    var ipl uint32
+    err := binary.Read(r, binary.BigEndian, &ipl)
+    return ipl, err
+}

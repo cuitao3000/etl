@@ -14,6 +14,8 @@ import (
     "time"
     "sync"
     "bufio"
+    "errors"
+    "strconv"
 )
 
 
@@ -31,9 +33,10 @@ type Dispatcher struct {
     mutex *sync.RWMutex
     typeValueRe *regexp.Regexp
     hostsRe []*regexp.Regexp  //合法host的正则
+    ipBlackList map[uint32]int  //ip黑名单 
 }
 
-func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePrefix string, hostsWhiteListFile string) *Dispatcher {
+func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePrefix string, hostsWhiteListFile string, ipBlackListFile string) *Dispatcher {
     m := loadColsMap(colsMapFile)
     w := make(map[string]io.WriteCloser)
     if routineNum < 0 {
@@ -45,7 +48,8 @@ func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePre
     mutex := &sync.RWMutex{}
     typeValueRe := regexp.MustCompile("^[0-9,a-z,A-Z,_]*$")
     hostsWhiteList := loadHostsWhiteList(hostsWhiteListFile)
-    return &Dispatcher{m, w, outDir, routineNum, outFilePrefix, mutex, typeValueRe, hostsWhiteList}
+    ipBlackList := loadIpBlackList(ipBlackListFile)
+    return &Dispatcher{ m, w, outDir, routineNum, outFilePrefix, mutex, typeValueRe, hostsWhiteList, ipBlackList }
 }
 
 func loadColsMap(fname string) columnsMap {
@@ -85,10 +89,65 @@ func loadHostsWhiteList(whiteListFile string) []*regexp.Regexp {
         }
         fin.Close()
     }
-    log.Println("load white list size:", len(wlist))
+    log.Println("load host white list size:", len(wlist))
     return wlist
 }
 
+func loadIpBlackList(blackListFile string) map[uint32]int {
+    blackList := make(map[uint32]int)
+
+    fin, err := os.Open(blackListFile)
+    if err != nil {
+        log.Println("load ip black list:", blackListFile, "error:", err)
+    }else{
+        scanner := bufio.NewScanner(fin)
+        for scanner.Scan() {
+            line := strings.Trim(scanner.Text(), " ")
+            if line[0] != '#' {
+                ipl, err := ipToInt(line)
+                if err != nil {
+                    log.Println("trans black ip", line, "to int error:", err)
+                }else{
+                    blackList[ipl] = 1
+                }
+            }
+        }
+        fin.Close()
+    }
+    log.Println("load ip black list size:", len(blackList))
+    return blackList
+}
+//先使用kvs的event_ipinlong检查，直接转成整型就能用
+//如果这个key是空，再转event_ip
+func (d *Dispatcher) isBlackIp(kvs map[string]string) bool {
+    //如果black list为空，则所有ip都ok
+    if len(d.ipBlackList) == 0 {
+        return false
+    }
+
+    var ipl uint32
+    var err error = errors.New("kvs had no ip key")
+
+    iplStr, ok := kvs["event_ipinlong"]
+    if ok && iplStr != "" {
+        i, er := strconv.ParseUint(iplStr, 10, 32)
+        err = er
+        if er == nil {
+            ipl = uint32(i)
+        }else{
+            log.Println("trans ipLong", iplStr, "to uint error", err)
+        }
+    }else if ip, ok := kvs["event_ip"]; ok {
+        i, er := ipToInt(ip)
+        err = er
+        ipl = i
+        if er != nil {
+            log.Println("[check ip] trans", ip, "to long error:", err)
+        }
+    }
+    _, ok = d.ipBlackList[ipl]
+    return ok
+}
 func (d *Dispatcher) check_type_value(t string) bool {
     if len(t) > 20 {
         return false
@@ -306,6 +365,10 @@ func (d *Dispatcher) getKind(kvs map[string]string) string {
 func (d *Dispatcher) dispatchRoutine(ch kvsChan, wg *sync.WaitGroup, routineId int) {
     log.Println("start dispatch routine", routineId)
     for kvs := range ch {
+        //过滤ip黑名单
+        if d.isBlackIp(kvs) {
+            continue
+        }
         kind := d.getKind(kvs)
         if kind != "" {
             d.saveFile(kvs, kind, routineId)
