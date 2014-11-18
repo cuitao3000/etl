@@ -382,6 +382,7 @@ func (g *GlobalHao123) parseCookie(cookieFields map[string]string, kvs map[strin
         kvs["globalhao123_flashid"] = tmp[:32]
     }
     tmp, _ = cookieFields["BDUSS"]
+    tmp, _ = net_url.QueryUnescape(tmp)   //BDUSS需要先unescape
     kvs["event_userid"] = fmt.Sprintf("%d", DecodeBDUSS(tmp))
     //从baiduid得到第一次访问的时间戳
     timeStamp := DecodeId(kvs["event_baiduid"])

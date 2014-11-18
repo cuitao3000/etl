@@ -3,14 +3,8 @@ package etl
 import (
     "regexp"
     "strings"
-    "encoding/json"
     "os"
-    "io"
-    "io/ioutil"
-    "bytes"
     "log"
-    "fmt"
-    "path/filepath"
     "time"
     "sync"
     "bufio"
@@ -20,50 +14,31 @@ import (
 
 
 type kvsChan chan map[string]string
-type columnsMap map[string]map[string][]string   // {"type": {"columns":[] , "partitions":[]}, ...}
 
 var LogKinds = []string{"access", "click", "open", "others"}
 
+//保存etl结果的类的接口
+type Saver interface {
+    Save(kvs map[string]string, kind string, routineId int)
+    CloseWriters(all bool)
+}
+
 type Dispatcher struct {
-    typeColsMap columnsMap
-    writers map[string]io.WriteCloser
-    outDir string
+    saver Saver
     routineNum int       //routine个数
-    outFilePrefix string  //输出文件名的默认前缀
-    mutex *sync.RWMutex
     typeValueRe *regexp.Regexp
     hostsRe []*regexp.Regexp  //合法host的正则
     ipBlackList map[uint32]int  //ip黑名单 
 }
 
-func NewDispatcher(colsMapFile string, outDir string, routineNum int, outFilePrefix string, hostsWhiteListFile string, ipBlackListFile string) *Dispatcher {
-    m := loadColsMap(colsMapFile)
-    w := make(map[string]io.WriteCloser)
+func NewDispatcher(saver Saver, routineNum int, hostsWhiteListFile string, ipBlackListFile string) *Dispatcher {
     if routineNum < 0 {
         routineNum = 20
     }
-    if outFilePrefix == "" {
-        outFilePrefix = "etl"
-    }
-    mutex := &sync.RWMutex{}
     typeValueRe := regexp.MustCompile("^[0-9,a-z,A-Z,_]*$")
     hostsWhiteList := loadHostsWhiteList(hostsWhiteListFile)
     ipBlackList := loadIpBlackList(ipBlackListFile)
-    return &Dispatcher{ m, w, outDir, routineNum, outFilePrefix, mutex, typeValueRe, hostsWhiteList, ipBlackList }
-}
-
-func loadColsMap(fname string) columnsMap {
-    m := make(columnsMap)
-    content , err := ioutil.ReadFile(fname)
-    if err != nil {
-        log.Println("read cols map file error", err)
-    }else{
-        err = json.Unmarshal(content, &m)
-        if err != nil {
-            log.Println("decode cols map error", err)
-        }
-    }
-    return m
+    return &Dispatcher{saver,  routineNum, typeValueRe, hostsWhiteList, ipBlackList }
 }
 
 func loadHostsWhiteList(whiteListFile string) []*regexp.Regexp {
@@ -222,126 +197,7 @@ func (d *Dispatcher) Disp_global_hao123_open(globalhao123_type string, event_url
     return false
 }
 
-//清理过期的文件操作符
-func (d *Dispatcher) closeWriters(all bool) {
-    now := time.Now().Unix()
-    var interval = int64(5 * 86400)
 
-    re, _ := regexp.Compile(`/(\d{8})/`)
-    for k, w := range d.writers {
-        if all {
-            w.Close()
-            d.mutex.Lock()
-            delete(d.writers, k)
-            d.mutex.Unlock()
-            continue
-        }
-
-        ret := re.FindSubmatch([]byte(k))
-        if ret == nil {
-            //格式不对，直接关闭
-            w.Close()
-            d.mutex.Lock()
-            delete(d.writers, k)
-            d.mutex.Unlock()
-            log.Println("[wrong writer]", k)
-        }else{
-            date := string(ret[1])
-            tm, err := time.Parse("20060102", date)
-            if err != nil || (now - tm.Unix()) > interval {
-                w.Close()
-                d.mutex.Lock()
-                delete(d.writers, k)
-                d.mutex.Unlock()
-                log.Println("[clear writer]", k)
-            }
-        }
-    }
-}
-
-func (d *Dispatcher) writeFile(w io.WriteCloser, kvs map[string]string, kind string) {
-    if w != nil {
-        var ok bool
-        cols, ok := d.typeColsMap[kind]["columns"]
-        if !ok {
-            log.Println("wrong log kind <", kind, "> when write file");
-            return;
-        }
-
-        var buf bytes.Buffer
-        var val string
-        nCols := len(cols)
-
-        for i, col := range cols {
-            val = ""
-            if col != "" {
-                val, ok = kvs[col]
-                if !ok {
-                    log.Println(kind, "miss field:", col)
-                }
-            }
-            //替换掉可能的换行符
-            if val != "" {
-                val = strings.Replace(val, "\n", "", -1)
-            }
-            buf.WriteString(val)
-            if i != nCols - 1 {
-                buf.WriteByte('\t')
-            }
-        }
-        if buf.Len() > 0 {
-            buf.WriteByte('\n')
-            w.Write(buf.Bytes())
-        }
-    }
-}
-
-func (d *Dispatcher) makePartitionsPath(kvs map[string]string, partitions []string) string {
-    tmp := make([]string, 0)
-    for _, p := range partitions {
-        v, ok := kvs[p]
-        if !ok || v == "" {
-            v = "NONE"
-        }
-        tmp = append(tmp, v)
-    }
-    return filepath.Join(tmp...)
-}
-
-func (d *Dispatcher) saveFile(kvs map[string]string, kind string, routineId int) {
-    //目录结构：/输出目录/四个大类型/分区构成的目录
-    partitions, ok := d.typeColsMap[kind]["partitions"]
-    if !ok {
-        return;
-    }
-    partitionPath := d.makePartitionsPath(kvs, partitions)
-    path := filepath.Join(d.outDir, kind, partitionPath)
-    filename := fmt.Sprintf("%s/%s_r%d", path, d.outFilePrefix, routineId)
-    d.mutex.RLock()
-    w, ok := d.writers[filename]   //查找有无打开的文件操作符，可以避免一些系统调用
-    d.mutex.RUnlock()
-    if !ok {
-        //先检查有无目录
-        if _,err := os.Stat(path); err != nil && os.IsNotExist(err) {
-            os.MkdirAll(path, 0775)
-        }   
-        fout, err := os.OpenFile(filename, os.O_WRONLY | os.O_APPEND | os.O_CREATE, 0666)
-        if err != nil {
-            log.Println("open", filename, "file for write error", err)
-            return
-        }else{
-            w = fout
-            if w == nil {
-                log.Println("[error] fout", filename, "is nil")
-                return
-            }
-            d.mutex.Lock()
-            d.writers[filename] = w
-            d.mutex.Unlock()
-        }
-    }
-    d.writeFile(w, kvs, kind)
-}
 //获取日志类别
 func (d *Dispatcher) getKind(kvs map[string]string) string {
     tp, _ := kvs["globalhao123_type"]
@@ -371,7 +227,7 @@ func (d *Dispatcher) dispatchRoutine(ch kvsChan, wg *sync.WaitGroup, routineId i
         }
         kind := d.getKind(kvs)
         if kind != "" {
-            d.saveFile(kvs, kind, routineId)
+            d.saver.Save(kvs, kind, routineId)
         }
         //log.Println("out chan", routineId, len(ch))
     }
@@ -383,7 +239,7 @@ func (d *Dispatcher) Dispatch(ch kvsChan, quitCh chan int) {
     go func(){
         for {
             time.Sleep(2 * time.Hour)
-            d.closeWriters(false)
+            d.saver.CloseWriters(false)
         }
     }()
     wg := &sync.WaitGroup{}
@@ -393,7 +249,7 @@ func (d *Dispatcher) Dispatch(ch kvsChan, quitCh chan int) {
     }
 
     wg.Wait()
-    d.closeWriters(true)
+    d.saver.CloseWriters(true)
     log.Println("dispatcher finish!")
     quitCh <- 1
 } 

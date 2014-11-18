@@ -42,7 +42,8 @@ func main(){
         flag.PrintDefaults()
         return
     }
-    d := NewDispatcher(colsMap, outDir, saveRoutineNum, outFilePrefix, whiteListFile, ipBlackListFile)
+    sv := NewFileSaver(colsMap, outDir, outFilePrefix)
+    d := NewDispatcher(sv, saveRoutineNum,  whiteListFile, ipBlackListFile)
     g := NewGlobalHao123(spiderList, inChanSize, outChanSize, parseRoutineNum, d)
 
     go g.Start(false)
