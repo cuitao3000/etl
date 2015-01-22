@@ -35,7 +35,7 @@ func NewDispatcher(saver Saver, routineNum int, hostsWhiteListFile string, ipBla
     if routineNum < 0 {
         routineNum = 20
     }
-    typeValueRe := regexp.MustCompile("^[0-9,a-z,A-Z,_]*$")
+    typeValueRe := regexp.MustCompile("^[0-9,a-z,A-Z,_.]*$")
     hostsWhiteList := loadHostsWhiteList(hostsWhiteListFile)
     ipBlackList := loadIpBlackList(ipBlackListFile)
     return &Dispatcher{saver,  routineNum, typeValueRe, hostsWhiteList, ipBlackList }
