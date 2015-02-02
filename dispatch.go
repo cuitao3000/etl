@@ -124,9 +124,6 @@ func (d *Dispatcher) isBlackIp(kvs map[string]string) bool {
     return ok
 }
 func (d *Dispatcher) check_type_value(t string) bool {
-    if len(t) > 20 {
-        return false
-    }
     return d.typeValueRe.MatchString(t)
 }
 
